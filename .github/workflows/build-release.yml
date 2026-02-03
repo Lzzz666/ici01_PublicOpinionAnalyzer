@@ -1,0 +1,105 @@
+# GitHub Actions workflow to build executables on merge to main
+name: Build Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: PublicOpinionAnalyzer-macOS
+            executable_ext: ""
+          - os: windows-latest
+            artifact_name: PublicOpinionAnalyzer-Windows
+            executable_ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build executable with PyInstaller
+        run: |
+          pyinstaller PublicOpinionAnalyzer.spec --noconfirm
+
+      - name: Compress build (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd dist
+          zip -r ${{ matrix.artifact_name }}.zip PublicOpinionAnalyzer.app || zip -r ${{ matrix.artifact_name }}.zip PublicOpinionAnalyzer
+
+      - name: Compress build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cd dist
+          Compress-Archive -Path PublicOpinionAnalyzer -DestinationPath ${{ matrix.artifact_name }}.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}.zip
+          retention-days: 90
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version/date for release
+        id: version
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.version.outputs.date }}-${{ steps.version.outputs.sha_short }}
+          name: Build ${{ steps.version.outputs.date }}
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            ## Downloads
+            - **macOS**: PublicOpinionAnalyzer-macOS.zip
+            - **Windows**: PublicOpinionAnalyzer-Windows.zip
+
+            ## How to use
+            1. Download the zip file for your operating system
+            2. Extract the zip file
+            3. Run the PublicOpinionAnalyzer executable
+            4. A browser window will open with the application
+          files: |
+            artifacts/PublicOpinionAnalyzer-macOS/PublicOpinionAnalyzer-macOS.zip
+            artifacts/PublicOpinionAnalyzer-Windows/PublicOpinionAnalyzer-Windows.zip
+          draft: false
+          prerelease: false
